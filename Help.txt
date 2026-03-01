@@ -1,0 +1,34 @@
+1. Prerequisites & Setup
+Run su root 
+Do chmod +x <script_name.sh> for all scripts
+
+Required Packages
+
+iperf3 
+python3 
+matplotlib 
+
+2. Directory Structure & Workflow
+CC_src/ (Source Code)
+cc_ledbat.c and cc_cubicX.c.
+
+Cubic is called cubicX cause it logs the cwnd on receiving ack (every 50 acks, to reduce logs)
+Ledbat logs owd and cwnd
+
+CC_LOADER/ 
+Helper module, used for compiliing and loading CC algos
+
+Usage Instructions:
+
+To load a module: ./cc_loader.sh cc_<algorithm_name> (e.g., ./cc_loader.sh cc_ledbat)
+To load AND switch the system default to the new algorithm: ./cc_loader.sh -s cc_<algorithm_name>
+
+Test/ (Experiment Execution & Graphing)
+This directory contains the scripts to build the virtual network, run the traffic tests, and visualize the data.
+
+setup_experiment.sh: Builds the virtualized network topology using FreeBSD VNET jails.
+Architecture: Creates 1 Server jail and 2 Client jails (CUBICX and LEDBAT). All three are connected to a virtual switch (bridge0).
+The Bottleneck Pipe: Uses Dummynet to forcefully route all traffic hitting the server through a single constrained virtual pipe (e.g., 20Mbps, 100-packet queue, 20ms base delay). This simulates a real-world router queue and forces the two client algorithms to compete for bandwidth.
+
+run_experiment.sh: Executes the live test. It configures the firewall rules, starts the iperf3 server instances, triggers the competing client traffic flows, and then safely extracts the LEDBAT_TRACE and CUBICX_TRACE data from dmesg into clean CSV files.
+plot.py: A Python visualization script. It reads the generated CSV trace files and uses matplotlib to render clean, high-resolution graphs comparing the algorithms' CWND and Queueing Delay over time.
