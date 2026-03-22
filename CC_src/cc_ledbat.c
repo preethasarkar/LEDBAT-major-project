@@ -38,8 +38,8 @@ struct ledbat {
 
 static int32_t ertt_id;
 
-/* LEDBAT Target queueing delay (in microseconds). Default is 100ms. */
-VNET_DEFINE_STATIC(uint32_t, ledbat_target) = 100000;
+
+VNET_DEFINE_STATIC(uint32_t, ledbat_target) = 50;
 #define V_ledbat_target VNET(ledbat_target)
 
 struct cc_algo ledbat_cc_algo = {
@@ -66,50 +66,53 @@ ledbat_ack_received(struct cc_var *ccv, ccsignal_t ack_type)
     e_t = khelp_get_osd(&CCV(ccv, t_osd), ertt_id);
     ledbat_data = ccv->cc_data;
 
-    if (e_t->flags & ERTT_NEW_MEASUREMENT) { /* Evaluated once per RTT. */
+    if (e_t->flags & ERTT_NEW_MEASUREMENT) { 
         if (e_t->minrtt && e_t->markedpkt_rtt) {
-            /* Calculate queueing delay: Current RTT - Minimum RTT seen */
-            queue_delay = e_t->markedpkt_rtt - e_t->minrtt;
             
-            /* Calculate offset from target delay */
+
+            queue_delay = e_t->markedpkt_rtt - e_t->minrtt;
+
+
+            if (queue_delay < 0) {
+                queue_delay = 0;
+            }
+            
+
             offset = (int64_t)V_ledbat_target - queue_delay;
+            cwnd_change = (offset * (int64_t)mss) / (int64_t)V_ledbat_target;
 
-            /* * LEDBAT CWND adjustment per RTT. 
-             * cwnd_change = (offset / target) * MSS 
-             */
-            cwnd_change = (offset * mss) / V_ledbat_target;
 
-            ledbat_data->ack_count++;
-            if ((ledbat_data->ack_count % 50) == 0) { /* Log every 50th ACK */
-                struct timeval tv;
-                microuptime(&tv);
-                /* Format: LEDBAT_TRACE, timestamp, delay, cwnd */
-                printf("LEDBAT_TRACE,%jd.%06ld,%jd,%u\n",
-                       (intmax_t)tv.tv_sec, (long)tv.tv_usec,
-                       (intmax_t)queue_delay, CCV(ccv, snd_cwnd));
+            struct timeval tv;
+            microuptime(&tv);
+            printf("LEDBAT_TRACE,%jd.%06ld,%jd,%u\n",
+                   (intmax_t)tv.tv_sec, (long)tv.tv_usec,
+                   (intmax_t)queue_delay, CCV(ccv, snd_cwnd));
+
+            if (ledbat_data->slow_start_toggle == 1) {
+                if (CCV(ccv, snd_cwnd) > CCV(ccv, snd_ssthresh)) {
+                    /* We crossed the threshold. Lock the door. */
+                    ledbat_data->slow_start_toggle = 0; 
+                }
             }
 
-            if (CCV(ccv, snd_cwnd) <= CCV(ccv, snd_ssthresh)) {
-                ledbat_data->slow_start_toggle =
-                    ledbat_data->slow_start_toggle ? 0 : 1;
-            } else {
-                ledbat_data->slow_start_toggle = 0;
-                
+            if (ledbat_data->slow_start_toggle == 0) {
                 if (cwnd_change >= 0) {
                     /* Increase CWND, bounded by MAXWIN */
-                    CCV(ccv, snd_cwnd) = min(CCV(ccv, snd_cwnd) + cwnd_change,
-                        TCP_MAXWIN << CCV(ccv, snd_scale));
+                    CCV(ccv, snd_cwnd) = min(CCV(ccv, snd_cwnd) + (uint32_t)cwnd_change,
+                                         TCP_MAXWIN << CCV(ccv, snd_scale));
                 } else {
-                    /* Decrease CWND, but do not drop below 2 * MSS */
+                    /* Decrease CWND, floor at 2 * MSS */
                     uint32_t decrease = (uint32_t)(-cwnd_change);
-                    CCV(ccv, snd_cwnd) = max(2 * mss, CCV(ccv, snd_cwnd) - decrease);
+                    if (CCV(ccv, snd_cwnd) > (2 * mss + decrease))
+                        CCV(ccv, snd_cwnd) -= decrease;
+                    else
+                        CCV(ccv, snd_cwnd) = 2 * mss;
                 }
             }
         }
         e_t->flags &= ~ERTT_NEW_MEASUREMENT;
     }
 
-    /* Fallback to NewReno slow start logic if toggled */
     if (ledbat_data->slow_start_toggle)
         newreno_cc_ack_received(ccv, ack_type);
 }
@@ -212,8 +215,8 @@ SYSCTL_NODE(_net_inet_tcp_cc, OID_AUTO, ledbat,
 
 SYSCTL_PROC(_net_inet_tcp_cc_ledbat, OID_AUTO, target,
     CTLFLAG_VNET | CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
-    &VNET_NAME(ledbat_target), 100000, &ledbat_target_handler, "IU",
-    "LEDBAT target queueing delay in microseconds (default: 100000)");
+    &VNET_NAME(ledbat_target), 50, &ledbat_target_handler, "IU",
+    "LEDBAT target queueing delay in microseconds");
 
 DECLARE_CC_MODULE(ledbat, &ledbat_cc_algo);
 MODULE_VERSION(ledbat, 1);
