@@ -1,5 +1,5 @@
 cc_ledbat.o: ../../CC_src/cc_ledbat.c \
-  /home/rian/Desktop/Project/LEDBAT-major-project/CC_LOADER/cc_ledbat/opt_global.h \
+  /home/preetha/LEDBAT-major-project/CC_LOADER/cc_ledbat/opt_global.h \
   /usr/src/sys/sys/param.h /usr/src/sys/sys/_null.h \
   /usr/src/sys/sys/_param.h /usr/src/sys/sys/types.h \
   /usr/src/sys/sys/cdefs.h /usr/src/sys/sys/_visible.h machine/endian.h \

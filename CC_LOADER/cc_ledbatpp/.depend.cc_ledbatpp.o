@@ -63,10 +63,11 @@ cc_ledbatpp.o: ../../CC_src/cc_ledbatpp.c \
   /usr/src/sys/sys/_smr.h /usr/src/sys/net/route.h /usr/src/sys/vm/uma.h \
   /usr/src/sys/vm/uma_align_mask.h /usr/src/sys/sys/ck.h \
   /usr/src/sys/contrib/ck/include/ck_queue.h /usr/src/sys/netinet/tcp.h \
-  /usr/src/sys/netinet/tcp_timer.h /usr/src/sys/netinet/tcp_var.h \
-  /usr/src/sys/netinet/tcp_fsm.h /usr/src/sys/sys/mbuf.h \
-  /usr/src/sys/sys/refcount.h /usr/src/sys/sys/ktls.h \
-  /usr/src/sys/sys/_task.h /usr/src/sys/netinet/cc/cc.h \
-  /usr/src/sys/sys/counter.h machine/counter.h \
-  /usr/src/sys/netinet/in_kdtrace.h /usr/src/sys/netinet/cc/cc_module.h \
+  /usr/src/sys/netinet/tcp_seq.h /usr/src/sys/netinet/tcp_timer.h \
+  /usr/src/sys/netinet/tcp_var.h /usr/src/sys/netinet/tcp_fsm.h \
+  /usr/src/sys/sys/mbuf.h /usr/src/sys/sys/refcount.h \
+  /usr/src/sys/sys/ktls.h /usr/src/sys/sys/_task.h \
+  /usr/src/sys/netinet/cc/cc.h /usr/src/sys/sys/counter.h \
+  machine/counter.h /usr/src/sys/netinet/in_kdtrace.h \
+  /usr/src/sys/netinet/cc/cc_module.h \
   /usr/src/sys/netinet/khelp/h_ertt.h

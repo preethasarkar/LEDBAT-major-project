@@ -12,6 +12,7 @@
 #include <netinet/in.h>
 #include <netinet/in_pcb.h>
 #include <netinet/tcp.h>
+#include <netinet/tcp_seq.h>
 #include <netinet/tcp_timer.h>
 #include <netinet/tcp_var.h>
 #include <netinet/cc/cc.h>
@@ -21,176 +22,194 @@
 
 static int32_t ertt_id;
 
+/* =========================
+   LEDBAT++ State & Config
+   ========================= */
+#define LEDBAT_MIN_CWND_PKTS 2
+#define LEDBAT_PERIODIC_INTERVAL 50 
+
 struct ledbatpp {
     int slow_start_toggle;
     uint32_t ack_count;
-    int ticks_last_drain; 
+    int slow_start;        
+    int initial_ss_done;   
+    
+    /* Slowdown State Machine */
+    enum { LB_NORMAL, LB_DRAINING, LB_RECOVERING } state;
+    uint32_t drain_rtt_count;    
+    tcp_seq  next_rtt_seq;       
+    uint32_t rtts_since_event;   
 };
 
-VNET_DEFINE_STATIC(uint32_t, ledbatpp_target) = 60;
+/* =========================
+   Target Delay (default 60ms)
+   ========================= */
+VNET_DEFINE_STATIC(uint32_t, ledbatpp_target) = 60000;
 #define V_ledbatpp_target VNET(ledbatpp_target)
 
 static double
 compute_gain(uint32_t target, uint32_t base)
 {
-    if (base == 0)
-        return 1.0;
-
+    if (base == 0) return 1.0;
     int val = (2 * target) / base;
-    if ((2 * target) % base != 0)
-        val++;
-
-    if (val > 16)
-        val = 16;
-    if (val < 1)
-        val = 1;
-
+    if ((2 * target) % base != 0) val++;
+    if (val > 16) val = 16;
+    if (val < 1)  val = 1;
     return 1.0 / val;
 }
 
-static size_t
-ledbatpp_data_sz(void)
-{
-    return sizeof(struct ledbatpp);
-}
+static size_t ledbatpp_data_sz(void) { return sizeof(struct ledbatpp); }
 
 static int
 ledbatpp_cb_init(struct cc_var *ccv, void *ptr)
 {
-    struct ledbatpp *ledbatpp_data;
-
+    struct ledbatpp *d;
     if (ptr == NULL) {
-        ledbatpp_data = malloc(sizeof(struct ledbatpp), M_CC_MEM, M_NOWAIT);
-        if (ledbatpp_data == NULL)
-            return ENOMEM;
-    } else
-        ledbatpp_data = ptr;
-
-    ledbatpp_data->ack_count = 0;
-    ledbatpp_data->slow_start_toggle = 1;
-    ledbatpp_data->ticks_last_drain = ticks; /* Initialize the timer */
-
-    ccv->cc_data = ledbatpp_data;
+        d = malloc(sizeof(struct ledbatpp), M_CC_MEM, M_NOWAIT | M_ZERO);
+        if (d == NULL) return ENOMEM;
+    } else d = ptr;
+    ccv->cc_data = d;
     return 0;
 }
 
-static void
-ledbatpp_cb_destroy(struct cc_var *ccv)
-{
-    free(ccv->cc_data, M_CC_MEM);
-}
+static void ledbatpp_cb_destroy(struct cc_var *ccv) { free(ccv->cc_data, M_CC_MEM); }
 
 static void
 ledbatpp_ack_received(struct cc_var *ccv, ccsignal_t ack_type)
 {
     struct ertt *e_t;
-    struct ledbatpp *ledbatpp_data;
-    uint32_t mss;
+    struct ledbatpp *d;
+    uint32_t mss, target;
     int64_t queue_delay;
     double gain;
-    uint32_t target;
-    uint32_t half_cwnd;
+    tcp_seq ack;
 
     e_t = khelp_get_osd(&CCV(ccv, t_osd), ertt_id);
     ledbatpp_data = ccv->cc_data;
     mss = tcp_fixed_maxseg(ccv->tp);
     target = V_ledbatpp_target;
 
-    if ((ticks - ledbatpp_data->ticks_last_drain) > (hz * 2)) {
-        
-        half_cwnd = CCV(ccv, snd_cwnd) / 2;
-        
-        /* Halve CWND, floor at 2 * MSS */
-        if (half_cwnd < 2 * mss) {
-            CCV(ccv, snd_cwnd) = 2 * mss;
-        } else {
-            CCV(ccv, snd_cwnd) = half_cwnd;
-        }
-        
-        ledbatpp_data->ticks_last_drain = ticks;
-    }
+    /* * Corrected: Using ccv->tp->snd_una to track the latest ACK 
+     * instead of ccv->th (which is not in the cc_var struct).
+     */
+    ack = ccv->tp->snd_una;
 
     if (!(e_t->flags & ERTT_NEW_MEASUREMENT))
         return;
 
-    if (e_t->minrtt && e_t->markedpkt_rtt) {
+    queue_delay = e_t->markedpkt_rtt - e_t->minrtt;
+    gain = compute_gain(target, e_t->minrtt);
 
-        queue_delay = e_t->markedpkt_rtt - e_t->minrtt;
-        gain = compute_gain(target, e_t->minrtt);
+    /* ---------------------------------------------------------
+       STATE: DRAINING (2nd RTT Freeze)
+       --------------------------------------------------------- */
+    if (d->state == LB_DRAINING) {
+        CCV(ccv, snd_cwnd) = LEDBAT_MIN_CWND_PKTS * mss;
 
-        if (ledbatpp_data->slow_start_toggle) {
-
-            CCV(ccv, snd_cwnd) += gain * mss;
-
-            if (queue_delay > (3 * target) / 4) {
-                ledbatpp_data->slow_start_toggle = 0;
-                CCV(ccv, snd_ssthresh) = CCV(ccv, snd_cwnd);
-            }
-
-        } else {
-
-            if (queue_delay < target) {
-                CCV(ccv, snd_cwnd) += gain * mss;
-            } else {
-
-                double ratio = ((double)queue_delay / target) - 1.0;
-
-                int32_t change =
-                    gain * mss -
-                    (CCV(ccv, snd_cwnd) * ratio);
-
-                int32_t min_change = -(CCV(ccv, snd_cwnd) / 2);
-
-                if (change < min_change)
-                    change = min_change;
-
-                CCV(ccv, snd_cwnd) += change;
-
-                if (CCV(ccv, snd_cwnd) < 2 * mss)
-                    CCV(ccv, snd_cwnd) = 2 * mss;
-            }
+        if (SEQ_GEQ(ack, d->next_rtt_seq)) {
+            d->drain_rtt_count++;
+            d->next_rtt_seq = ccv->tp->snd_max; 
         }
 
-        ledbatpp_data->ack_count++;
-
-        struct timeval tv;
-        microuptime(&tv);
-
-            printf("LEDBATPP_TRACE,%jd.%06ld,%jd,%u\n",
-                   (intmax_t)tv.tv_sec,
-                   (long)tv.tv_usec,
-                   (intmax_t)queue_delay,
-                   CCV(ccv, snd_cwnd));
-        
+        if (d->drain_rtt_count >= 2) {
+            d->state = LB_RECOVERING;
+            d->slow_start = 1; 
+        }
+        goto end;
     }
 
+    /* ---------------------------------------------------------
+       STATE: RECOVERING (SS back to ssthresh)
+       --------------------------------------------------------- */
+    if (d->state == LB_RECOVERING) {
+        CCV(ccv, snd_cwnd) += (uint32_t)(gain * mss);
+
+        if (CCV(ccv, snd_cwnd) >= CCV(ccv, snd_ssthresh)) {
+            d->state = LB_NORMAL;
+            d->slow_start = 0;
+            d->rtts_since_event = 0;
+            d->next_rtt_seq = ccv->tp->snd_max;
+        }
+        goto end;
+    }
+
+    /* ---------------------------------------------------------
+       STATE: NORMAL
+       --------------------------------------------------------- */
+    if (d->slow_start) {
+        CCV(ccv, snd_cwnd) += (uint32_t)(gain * mss);
+
+        if (!d->initial_ss_done) {
+            if (queue_delay > (3 * target) / 4) {
+                d->slow_start = 0;
+                d->initial_ss_done = 1;
+                CCV(ccv, snd_ssthresh) = CCV(ccv, snd_cwnd);
+                d->rtts_since_event = 0;
+                d->next_rtt_seq = ccv->tp->snd_max;
+            }
+        } else if (CCV(ccv, snd_cwnd) >= CCV(ccv, snd_ssthresh)) {
+            d->slow_start = 0;
+        }
+    } else {
+        if (queue_delay < target) {
+            CCV(ccv, snd_cwnd) += (uint32_t)(gain * mss);
+        } else {
+            double ratio = ((double)queue_delay / target) - 1.0;
+            int32_t change = (int32_t)(gain * mss) - (int32_t)(CCV(ccv, snd_cwnd) * ratio);
+            int32_t min_change = -(int32_t)(CCV(ccv, snd_cwnd) / 2);
+
+            if (change < min_change) change = min_change;
+            CCV(ccv, snd_cwnd) += change;
+
+            if (CCV(ccv, snd_cwnd) < LEDBAT_MIN_CWND_PKTS * mss)
+                CCV(ccv, snd_cwnd) = LEDBAT_MIN_CWND_PKTS * mss;
+        }
+    }
+
+    /* Track RTTs for Periodic 50-RTT Trigger */
+    if (SEQ_GEQ(ack, d->next_rtt_seq)) {
+        d->rtts_since_event++;
+        d->next_rtt_seq = ccv->tp->snd_max;
+
+        if (d->rtts_since_event >= LEDBAT_PERIODIC_INTERVAL) {
+            d->state = LB_DRAINING;
+            d->drain_rtt_count = 0;
+            CCV(ccv, snd_ssthresh) = CCV(ccv, snd_cwnd); 
+        }
+    }
+
+end:
     e_t->flags &= ~ERTT_NEW_MEASUREMENT;
 }
 
 static void
 ledbatpp_cong_signal(struct cc_var *ccv, ccsignal_t signal_type)
 {
-    newreno_cc_cong_signal(ccv, signal_type);
+    struct ledbatpp *d = ccv->cc_data;
+    if (type == CC_RTO) {
+        d->slow_start = 1;
+        d->state = LB_NORMAL; 
+    }
+    newreno_cc_cong_signal(ccv, type);
 }
 
 static void
 ledbatpp_conn_init(struct cc_var *ccv)
 {
-    struct ledbatpp *ledbatpp_data = ccv->cc_data;
-    ledbatpp_data->slow_start_toggle = 1;
-
-    CCV(ccv, snd_cwnd) = 2 * tcp_fixed_maxseg(ccv->tp);
+    struct ledbatpp *d = ccv->cc_data;
+    d->slow_start = 1;
+    d->initial_ss_done = 0;
+    d->state = LB_NORMAL;
+    d->rtts_since_event = 0;
+    CCV(ccv, snd_cwnd) = LEDBAT_MIN_CWND_PKTS * tcp_fixed_maxseg(ccv->tp);
+    d->next_rtt_seq = ccv->tp->snd_max;
 }
 
 static int
 ledbatpp_mod_init(void)
 {
     ertt_id = khelp_get_id("ertt");
-    if (ertt_id <= 0) {
-        printf("ledbatpp: ertt module not found\n");
-        return ENOENT;
-    }
-    return 0;
+    return (ertt_id <= 0) ? ENOENT : 0;
 }
 
 struct cc_algo ledbatpp_cc_algo = {
