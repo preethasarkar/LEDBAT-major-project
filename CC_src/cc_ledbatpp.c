@@ -32,17 +32,18 @@ static int32_t ertt_id;
 struct ledbatpp {
     int slow_start_toggle;
     uint32_t ack_count;
-    int slow_start;        
-    int initial_ss_done;   
-    
+    int slow_start;
+    int initial_ss_done;
+    uint32_t min_rtt;      /* our own min RTT tracker, filters bogus early samples */
+
     /* Slowdown State Machine */
     enum { LB_NORMAL, LB_DRAINING, LB_RECOVERING } state;
-    uint32_t drain_rtt_count;    
-    tcp_seq  next_rtt_seq;       
-    uint32_t rtts_since_event;   
+    uint32_t drain_rtt_count;
+    tcp_seq  next_rtt_seq;
+    uint32_t rtts_since_event;
 };
 
-VNET_DEFINE_STATIC(uint32_t, ledbatpp_target) = 100;
+VNET_DEFINE_STATIC(uint32_t, ledbatpp_target) = 100000; /* microseconds (100ms) */
 #define V_ledbatpp_target VNET(ledbatpp_target)
 
 /* * Fixed-point gain calculation: Returns (1.0 / val) * SCALE 
@@ -81,7 +82,7 @@ ledbatpp_ack_received(struct cc_var *ccv, ccsignal_t ack_type)
 {
     struct ertt *e_t;
     struct ledbatpp *d;
-    uint32_t mss, target, gain_fixed;
+    uint32_t mss, target, gain_fixed, current_rtt;
     int64_t queue_delay, change;
     tcp_seq ack;
 
@@ -99,11 +100,40 @@ ledbatpp_ack_received(struct cc_var *ccv, ccsignal_t ack_type)
     if (!(e_t->flags & ERTT_NEW_MEASUREMENT))
         return;
 
-    queue_delay = (int64_t)e_t->markedpkt_rtt - (int64_t)e_t->minrtt;
-    gain_fixed = compute_gain_fixed(target, e_t->minrtt);
+    /* Use t_srtt for RTT — includes dummynet delay unlike ertt.
+     * t_srtt is stored as actual_rtt_ticks * TCP_RTT_SCALE (32).
+     * Convert to microseconds: (t_srtt >> TCP_RTT_SHIFT) * (1000000 / hz) */
+    current_rtt = (uint32_t)(ccv->tp->t_srtt >> TCP_RTT_SHIFT) *
+                  (1000000 / hz);
 
-    /* Log data for your plot.py script */
-    printf("TRACE,%u,%ld,%u\n", (uint32_t)ticks, (long)(queue_delay/1000), CCV(ccv, snd_cwnd));
+    /* Update our min_rtt — ignore zero or implausibly small values */
+    if (current_rtt > 1000) {
+        if (d->min_rtt == 0 || current_rtt < d->min_rtt)
+            d->min_rtt = current_rtt;
+    }
+
+    /* Guard: skip until we have a valid baseline */
+    if (d->min_rtt == 0 || e_t->minrtt == 0 || e_t->markedpkt_rtt == 0)
+        goto end;
+
+    queue_delay = (int64_t)current_rtt - (int64_t)d->min_rtt;
+    gain_fixed = compute_gain_fixed(target, d->min_rtt);
+
+    /* Bootstrap next_rtt_seq on first measurement */
+    if (d->next_rtt_seq == 0)
+        d->next_rtt_seq = ccv->tp->snd_max;
+
+    /* Log: wall time (s.us), delay (ms), cwnd (bytes), min_rtt (us), current_rtt (us) */
+    {
+        struct timeval tv;
+        microuptime(&tv);
+        printf("TRACE,%jd.%06ld,%ld,%u,%u,%u\n",
+               (intmax_t)tv.tv_sec, (long)tv.tv_usec,
+               (long)(queue_delay / 1000),
+               CCV(ccv, snd_cwnd),
+               d->min_rtt,
+               current_rtt);
+    }
 
     /* ---------------------------------------------------------
        STATE: DRAINING
@@ -149,7 +179,8 @@ ledbatpp_ack_received(struct cc_var *ccv, ccsignal_t ack_type)
                 d->slow_start = 0;
                 d->initial_ss_done = 1;
                 CCV(ccv, snd_ssthresh) = CCV(ccv, snd_cwnd);
-                d->rtts_since_event = 0;
+                /* First slowdown fires 2 RTTs after slow start exits */
+                d->rtts_since_event = LEDBAT_PERIODIC_INTERVAL - 2;
                 d->next_rtt_seq = ccv->tp->snd_max;
             }
         } else if (CCV(ccv, snd_cwnd) >= CCV(ccv, snd_ssthresh)) {
@@ -216,8 +247,9 @@ ledbatpp_conn_init(struct cc_var *ccv)
     d->initial_ss_done = 0;
     d->state = LB_NORMAL;
     d->rtts_since_event = 0;
+    d->next_rtt_seq = 0;
+    d->min_rtt = 0;
     CCV(ccv, snd_cwnd) = LEDBAT_MIN_CWND_PKTS * tcp_fixed_maxseg(ccv->tp);
-    d->next_rtt_seq = ccv->tp->snd_max;
 }
 
 static int
@@ -269,3 +301,4 @@ SYSCTL_PROC(_net_inet_tcp_cc_ledbatpp, OID_AUTO, target,
 DECLARE_CC_MODULE(ledbatpp, &ledbatpp_cc_algo);
 MODULE_VERSION(ledbatpp, 1);
 MODULE_DEPEND(ledbatpp, ertt, 1, 1, 1);
+
