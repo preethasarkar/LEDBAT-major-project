@@ -26,7 +26,8 @@ static int32_t ertt_id;
    LEDBAT++ State & Config
    ========================= */
 #define LEDBAT_MIN_CWND_PKTS 2
-#define LEDBAT_PERIODIC_INTERVAL 50 
+#define LEDBAT_PERIODIC_INTERVAL 300
+#define SCALE 1024  /* 2^10 for fixed-point math */
 
 struct ledbatpp {
     int slow_start_toggle;
@@ -41,21 +42,19 @@ struct ledbatpp {
     uint32_t rtts_since_event;   
 };
 
-/* =========================
-   Target Delay (default 60ms)
-   ========================= */
-VNET_DEFINE_STATIC(uint32_t, ledbatpp_target) = 60000;
+VNET_DEFINE_STATIC(uint32_t, ledbatpp_target) = 100;
 #define V_ledbatpp_target VNET(ledbatpp_target)
 
-static double
-compute_gain(uint32_t target, uint32_t base)
+/* * Fixed-point gain calculation: Returns (1.0 / val) * SCALE 
+ */
+static uint32_t
+compute_gain_fixed(uint32_t target, uint32_t base)
 {
-    if (base == 0) return 1.0;
-    int val = (2 * target) / base;
-    if ((2 * target) % base != 0) val++;
+    if (base == 0) return SCALE;
+    uint32_t val = (2 * target) / base;
     if (val > 16) val = 16;
     if (val < 1)  val = 1;
-    return 1.0 / val;
+    return SCALE / val;
 }
 
 static size_t ledbatpp_data_sz(void) { return sizeof(struct ledbatpp); }
@@ -72,36 +71,42 @@ ledbatpp_cb_init(struct cc_var *ccv, void *ptr)
     return 0;
 }
 
-static void ledbatpp_cb_destroy(struct cc_var *ccv) { free(ccv->cc_data, M_CC_MEM); }
+static void ledbatpp_cb_destroy(struct cc_var *ccv) { 
+    if (ccv->cc_data != NULL)
+        free(ccv->cc_data, M_CC_MEM); 
+}
 
 static void
 ledbatpp_ack_received(struct cc_var *ccv, ccsignal_t ack_type)
 {
     struct ertt *e_t;
     struct ledbatpp *d;
-    uint32_t mss, target;
-    int64_t queue_delay;
-    double gain;
+    uint32_t mss, target, gain_fixed;
+    int64_t queue_delay, change;
     tcp_seq ack;
 
+    d = ccv->cc_data;
     e_t = khelp_get_osd(&CCV(ccv, t_osd), ertt_id);
-    ledbatpp_data = ccv->cc_data;
+
+    /* NULL Guards to prevent Kernel Panic */
+    if (d == NULL || e_t == NULL)
+        return;
+
     mss = tcp_fixed_maxseg(ccv->tp);
     target = V_ledbatpp_target;
-
-    /* * Corrected: Using ccv->tp->snd_una to track the latest ACK 
-     * instead of ccv->th (which is not in the cc_var struct).
-     */
     ack = ccv->tp->snd_una;
 
     if (!(e_t->flags & ERTT_NEW_MEASUREMENT))
         return;
 
-    queue_delay = e_t->markedpkt_rtt - e_t->minrtt;
-    gain = compute_gain(target, e_t->minrtt);
+    queue_delay = (int64_t)e_t->markedpkt_rtt - (int64_t)e_t->minrtt;
+    gain_fixed = compute_gain_fixed(target, e_t->minrtt);
+
+    /* Log data for your plot.py script */
+    printf("TRACE,%u,%ld,%u\n", (uint32_t)ticks, (long)(queue_delay/1000), CCV(ccv, snd_cwnd));
 
     /* ---------------------------------------------------------
-       STATE: DRAINING (2nd RTT Freeze)
+       STATE: DRAINING
        --------------------------------------------------------- */
     if (d->state == LB_DRAINING) {
         CCV(ccv, snd_cwnd) = LEDBAT_MIN_CWND_PKTS * mss;
@@ -119,10 +124,10 @@ ledbatpp_ack_received(struct cc_var *ccv, ccsignal_t ack_type)
     }
 
     /* ---------------------------------------------------------
-       STATE: RECOVERING (SS back to ssthresh)
+       STATE: RECOVERING
        --------------------------------------------------------- */
     if (d->state == LB_RECOVERING) {
-        CCV(ccv, snd_cwnd) += (uint32_t)(gain * mss);
+        CCV(ccv, snd_cwnd) += (uint32_t)((gain_fixed * mss) / SCALE);
 
         if (CCV(ccv, snd_cwnd) >= CCV(ccv, snd_ssthresh)) {
             d->state = LB_NORMAL;
@@ -137,10 +142,10 @@ ledbatpp_ack_received(struct cc_var *ccv, ccsignal_t ack_type)
        STATE: NORMAL
        --------------------------------------------------------- */
     if (d->slow_start) {
-        CCV(ccv, snd_cwnd) += (uint32_t)(gain * mss);
+        CCV(ccv, snd_cwnd) += (uint32_t)((gain_fixed * mss) / SCALE);
 
         if (!d->initial_ss_done) {
-            if (queue_delay > (3 * target) / 4) {
+            if (queue_delay > (int64_t)((3 * target) / 4)) {
                 d->slow_start = 0;
                 d->initial_ss_done = 1;
                 CCV(ccv, snd_ssthresh) = CCV(ccv, snd_cwnd);
@@ -151,15 +156,23 @@ ledbatpp_ack_received(struct cc_var *ccv, ccsignal_t ack_type)
             d->slow_start = 0;
         }
     } else {
-        if (queue_delay < target) {
-            CCV(ccv, snd_cwnd) += (uint32_t)(gain * mss);
+        if (queue_delay < (int64_t)target) {
+            CCV(ccv, snd_cwnd) += (uint32_t)((gain_fixed * mss) / SCALE);
         } else {
-            double ratio = ((double)queue_delay / target) - 1.0;
-            int32_t change = (int32_t)(gain * mss) - (int32_t)(CCV(ccv, snd_cwnd) * ratio);
-            int32_t min_change = -(int32_t)(CCV(ccv, snd_cwnd) / 2);
+            /* * change = (gain * mss) - (cwnd * (delay - target) / target)
+             * All math scaled by gain_fixed and SCALE to avoid floats
+             */
+            int64_t term1 = (int64_t)gain_fixed * mss;
+            int64_t diff = queue_delay - (int64_t)target;
+            int64_t term2 = ((int64_t)CCV(ccv, snd_cwnd) * diff * gain_fixed) / (int64_t)target;
+            
+            change = (term1 - term2) / SCALE;
 
-            if (change < min_change) change = min_change;
-            CCV(ccv, snd_cwnd) += change;
+            /* Limit decrease to 50% per ACK for stability */
+            int64_t max_decrease = -(int64_t)(CCV(ccv, snd_cwnd) / 2);
+            if (change < max_decrease) change = max_decrease;
+            
+            CCV(ccv, snd_cwnd) += (int32_t)change;
 
             if (CCV(ccv, snd_cwnd) < LEDBAT_MIN_CWND_PKTS * mss)
                 CCV(ccv, snd_cwnd) = LEDBAT_MIN_CWND_PKTS * mss;
@@ -186,7 +199,7 @@ static void
 ledbatpp_cong_signal(struct cc_var *ccv, ccsignal_t signal_type)
 {
     struct ledbatpp *d = ccv->cc_data;
-    if (type == CC_RTO) {
+    if (d != NULL && type == CC_RTO) {
         d->slow_start = 1;
         d->state = LB_NORMAL; 
     }
@@ -197,6 +210,8 @@ static void
 ledbatpp_conn_init(struct cc_var *ccv)
 {
     struct ledbatpp *d = ccv->cc_data;
+    if (d == NULL) return;
+
     d->slow_start = 1;
     d->initial_ss_done = 0;
     d->state = LB_NORMAL;

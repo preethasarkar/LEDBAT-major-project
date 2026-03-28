@@ -10,7 +10,7 @@ run_and_plot() {
     CC=$3
     
     echo "================================================="
-    echo " STARTING RUN: Bandwidth = $BW, RTT = $RTT"
+    echo " STARTING RUN: Bandwidth = $BW, RTT = $RTT", CC=$CC
     echo "================================================="
     
     # 1. Run the experiment
