@@ -39,7 +39,7 @@ struct ledbat {
 static int32_t ertt_id;
 
 
-VNET_DEFINE_STATIC(uint32_t, ledbat_target) = 50;
+VNET_DEFINE_STATIC(uint32_t, ledbat_target) = 100;
 #define V_ledbat_target VNET(ledbat_target)
 
 struct cc_algo ledbat_cc_algo = {
@@ -215,8 +215,8 @@ SYSCTL_NODE(_net_inet_tcp_cc, OID_AUTO, ledbat,
 
 SYSCTL_PROC(_net_inet_tcp_cc_ledbat, OID_AUTO, target,
     CTLFLAG_VNET | CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
-    &VNET_NAME(ledbat_target), 50, &ledbat_target_handler, "IU",
-    "LEDBAT target queueing delay in microseconds");
+    &VNET_NAME(ledbat_target), 100, &ledbat_target_handler, "IU",
+    "LEDBAT target queueing delay");
 
 DECLARE_CC_MODULE(ledbat, &ledbat_cc_algo);
 MODULE_VERSION(ledbat, 1);

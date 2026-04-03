@@ -4,14 +4,15 @@ import matplotlib.pyplot as plt
 
 # Get BW and RTT from command line arguments for the title and filename
 if len(sys.argv) < 3:
-    print("Usage: python3 plot_combined.py <BW> <RTT>")
+    print("Usage: python3 plot_combined.py <BW> <RTT> <CC>")
     sys.exit(1)
 
 bw = sys.argv[1]
 rtt = sys.argv[2]
+cc= sys.argv[3]
 # Sanitize filename (replace / with _)
 filename_bw = bw.replace("/", "_")
-output_filename = f"ledbat_{filename_bw}_{rtt}.png"
+output_filename = f"{cc}_{filename_bw}_{rtt}.png"
 
 time = []
 delay = []
@@ -53,7 +54,7 @@ ax1.legend(loc="upper left")
 
 # --- Bottom Plot: Queue Delay ---
 ax2.plot(time, delay, label="Queue Delay", color="orange", linewidth=1)
-ax2.axhline(y=75, color='red', linestyle='--', label='Target (75ms)')
+ax2.axhline(y=50, color='red', linestyle='--', label='Target (50ms)')
 ax2.set_xlabel("Time (s)")
 ax2.set_ylabel("Delay (ms)")
 ax2.grid(True)

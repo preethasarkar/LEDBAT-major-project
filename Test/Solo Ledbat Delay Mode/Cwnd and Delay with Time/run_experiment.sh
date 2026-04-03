@@ -2,17 +2,18 @@
 
 BW=$1
 RTT=$2
+CC=$3
 
-if [ -z "$BW" ] || [ -z "$RTT" ]; then
-    echo "Usage: $0 <BW> <RTT>"
-    echo "Example: $0 20Mbit/s 50ms"
+if [ -z "$BW" ] || [ -z "$RTT" ] || [ -z "$CC" ]; then
+    echo "Usage: $0 <BW> <RTT> <CC>"
+    echo "Example: $0 20Mbit/s 50ms ledbat"
     exit 1
 fi
 
 echo "--- 0. Running setup script ---"
 cd ../../
 # This calls the setup script we modified earlier
-./setup_experiment.sh 1 "ledbat" "$BW" 500 "$RTT" || exit 1
+./setup_experiment.sh 1 "$CC" "$BW" 500 "$RTT" || exit 1
 cd - > /dev/null
 
 echo "--- 1. Pre-flight setup ---"
@@ -52,7 +53,7 @@ iperf3 -s -p 5201 -D
 
 echo "Running LEDBAT flow for 300 seconds..."
 # Client1 connects to the host
-jexec client1 iperf3 -c 10.0.0.1 -t 300 -p 5201 > throughput.txt
+jexec client1 iperf3 -c 10.0.0.1 -t 60 -p 5201 > throughput.txt
 
 echo "--- 5. Extract CWND logs ---"
 

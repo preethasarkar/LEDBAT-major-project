@@ -1,52 +1,68 @@
 #!/bin/sh
 
-echo "--- 1. Pre-Flight Checks & Environment Setup ---"
-# Kill any leftover iperf3 server processes
-killall iperf3 2>/dev/null
-
-# Bring up loopback interfaces in all jails (iperf3 needs this to bind properly)
-jexec server ifconfig lo0 127.0.0.1/8 up
-jexec cubic_client ifconfig lo0 127.0.0.1/8 up
-jexec ledbat_client ifconfig lo0 127.0.0.1/8 up
-
-echo "--- 2. Configuring strict IPFW Rules ---"
-# Flush all existing rules in the jails
-jexec cubic_client ipfw -q flush
-jexec ledbat_client ipfw -q flush
-
-# explicitly ALLOW all traffic to pass in all jails
-jexec server ipfw add 65534 allow ip from any to any
-jexec cubic_client ipfw add 65534 allow ip from any to any
-jexec ledbat_client ipfw add 65534 allow ip from any to any
-
-# Verify basic connectivity before starting the test
-echo "Testing network bridge connectivity..."
-jexec ledbat_client ping -c 1 10.0.0.1 >/dev/null 2>&1
-if [ $? -ne 0 ]; then
-    echo "ERROR: ledbat_client cannot ping the server (10.0.0.1). Bridge or firewall is broken."
+BW=$1
+RTT=$2
+CAPACITY=$3
+DUR=$4
+if [ -z "$BW" ] || [ -z "$RTT" ] || [ -z "$CAPACITY" ] || [ -z "$DUR" ]; then
+    echo "Usage: $0 <BW> <RTT> <CAPACITY> <DURATION>"
+    echo "Example: $0 20Mbit/s 50ms 200 60"
     exit 1
 fi
-echo "Connectivity verified!"
 
-echo "Starting iperf3 server on port 5201 & 5202..."
+echo "--- 0. Running setup script ---"
+cd ../../
+# Ask setup script for 2 clients, using ledbat and cubicX
+./setup_experiment.sh 2 "ledbat,cubicX" "$BW" "$CAPACITY" "$RTT" || exit 1
+cd - > /dev/null
+
+echo "--- 1. Pre-flight setup ---"
+killall iperf3 2>/dev/null
+
+# Bring up loopbacks for both clients
+jexec client1 ifconfig lo0 127.0.0.1/8 up
+jexec client2 ifconfig lo0 127.0.0.1/8 up
+
+echo "--- 2. Configure IPFW ---"
+jexec client1 ipfw -q flush
+jexec client1 ipfw add 65534 allow ip from any to any
+
+jexec client2 ipfw -q flush
+jexec client2 ipfw add 65534 allow ip from any to any
+
+# Host-side safety rule
+ipfw add 1000 allow ip from any to any 2>/dev/null
+
+jexec client1 sysctl net.inet.tcp.cc.ledbat.target=10
+
+echo "--- 3. Connectivity test ---"
+jexec client1 ping -c 1 10.0.0.1 >/dev/null 2>&1 || { echo "ERROR: client1 failed"; exit 1; }
+jexec client2 ping -c 1 10.0.0.1 >/dev/null 2>&1 || { echo "ERROR: client2 failed"; exit 1; }
+echo "Connectivity OK for both clients"
+
+echo "--- 4. Start experiment ---"
 dmesg -c > /dev/null
-# Start two server instances so both clients can connect simultaneously
-jexec server iperf3 -s -p 5201 -D
-jexec server iperf3 -s -p 5202 -D
 
-echo "Starting LEDBAT background flow (200 seconds)..."
-jexec ledbat_client iperf3 -c 10.0.0.1 -t 200 -p 5201 > ledbat_throughput.txt &
+# Start TWO iperf servers on the host on different ports
+iperf3 -s -p 5201 -D
+iperf3 -s -p 5202 -D
 
-sleep 50
+#increasing buffer size to 33MB
+sysctl kern.ipc.maxsockbuf=33554432
 
-echo "Starting CUBIC flow (100 seconds)..."
-jexec cubic_client iperf3 -c 10.0.0.1 -t 100 -p 5202 > cubic_throughput.txt &
+echo "Running LEDBAT vs CUBIC competition for $DUR seconds..."
 
-# Wait for background jobs to finish
+# Start both clients in the BACKGROUND using '&' so they run simultaneously
+jexec client1 iperf3 -c 10.0.0.1 -w 16M -t $DUR -p 5201 > ./logs/throughput_ledbat.txt &
+sleep 1
+jexec client2 iperf3 -c 10.0.0.1 -w 16M -t $DUR -p 5202 > ./logs/throughput_cubic.txt &
+
+# Wait for both background processes to finish before continuing
 wait
 
+echo "--- 5. Extract CWND logs ---"
+# Extract traces into two separate files
+dmesg | grep "LEDBAT_TRACE" | awk -F "LEDBAT_TRACE," '{print $2}' > ./logs/cwnd_ledbat.csv
+dmesg | grep "CUBIC_TRACE"  | awk -F "CUBIC_TRACE," '{print $2}' > ./logs/cwnd_cubic.csv
 
-echo "Results saved. You can now run the Python plot script!"
-
-dmesg | grep "LEDBAT_TRACE" | awk -F "LEDBAT_TRACE," '{print $2}' > ledbat_trace.csv
-dmesg | grep "CUBICX_TRACE" | awk -F "CUBICX_TRACE," '{print $2}' > cubicx_trace.csv
+echo "Experiment complete."

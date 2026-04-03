@@ -249,10 +249,10 @@ cubic_ack_received(struct cc_var *ccv, ccsignal_t type)
 	cubic_record_rtt(ccv);
 
 	cubicx_ack_count++;
-	if ((cubicx_ack_count % 50) == 0) { /* Log every 50th ACK */
+	if ((cubicx_ack_count % 50) == 0) { 
 		microuptime(&tv);
-		/* Format: CUBICX_TRACE, timestamp, cwnd */
-		printf("CUBICX_TRACE,%jd.%06ld,%u\n",
+		/* Format: CUBIC_TRACE, timestamp, dummy_delay(0), cwnd */
+		printf("CUBIC_TRACE,%jd.%06ld,0,%u\n",
 		       (intmax_t)tv.tv_sec, (long)tv.tv_usec,
 		       cwin);
 	}

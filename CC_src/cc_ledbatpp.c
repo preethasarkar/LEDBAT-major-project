@@ -21,23 +21,15 @@
 
 static int32_t ertt_id;
 
-/* =========================
-   LEDBAT++ State
-   ========================= */
 struct ledbatpp {
+    int slow_start_toggle;
     uint32_t ack_count;
-    int slow_start;
+    int ticks_last_drain; 
 };
 
-/* =========================
-   Target Delay (default 60ms from draft)
-   ========================= */
-VNET_DEFINE_STATIC(uint32_t, ledbatpp_target) = 60000;
+VNET_DEFINE_STATIC(uint32_t, ledbatpp_target) = 60;
 #define V_ledbatpp_target VNET(ledbatpp_target)
 
-/* =========================
-   Compute Dynamic GAIN (Section 4.1)
-   ========================= */
 static double
 compute_gain(uint32_t target, uint32_t base)
 {
@@ -56,9 +48,6 @@ compute_gain(uint32_t target, uint32_t base)
     return 1.0 / val;
 }
 
-/* =========================
-   Init / Destroy
-   ========================= */
 static size_t
 ledbatpp_data_sz(void)
 {
@@ -68,19 +57,20 @@ ledbatpp_data_sz(void)
 static int
 ledbatpp_cb_init(struct cc_var *ccv, void *ptr)
 {
-    struct ledbatpp *d;
+    struct ledbatpp *ledbatpp_data;
 
     if (ptr == NULL) {
-        d = malloc(sizeof(struct ledbatpp), M_CC_MEM, M_NOWAIT);
-        if (d == NULL)
+        ledbatpp_data = malloc(sizeof(struct ledbatpp), M_CC_MEM, M_NOWAIT);
+        if (ledbatpp_data == NULL)
             return ENOMEM;
     } else
-        d = ptr;
+        ledbatpp_data = ptr;
 
-    d->ack_count = 0;
-    d->slow_start = 1;
+    ledbatpp_data->ack_count = 0;
+    ledbatpp_data->slow_start_toggle = 1;
+    ledbatpp_data->ticks_last_drain = ticks; /* Initialize the timer */
 
-    ccv->cc_data = d;
+    ccv->cc_data = ledbatpp_data;
     return 0;
 }
 
@@ -90,68 +80,65 @@ ledbatpp_cb_destroy(struct cc_var *ccv)
     free(ccv->cc_data, M_CC_MEM);
 }
 
-/* =========================
-   ACK Handling (CORE LOGIC)
-   ========================= */
 static void
-ledbatpp_ack_received(struct cc_var *ccv, ccsignal_t type)
+ledbatpp_ack_received(struct cc_var *ccv, ccsignal_t ack_type)
 {
     struct ertt *e_t;
-    struct ledbatpp *d;
+    struct ledbatpp *ledbatpp_data;
     uint32_t mss;
     int64_t queue_delay;
     double gain;
     uint32_t target;
+    uint32_t half_cwnd;
 
     e_t = khelp_get_osd(&CCV(ccv, t_osd), ertt_id);
-    d = ccv->cc_data;
+    ledbatpp_data = ccv->cc_data;
     mss = tcp_fixed_maxseg(ccv->tp);
     target = V_ledbatpp_target;
+
+    if ((ticks - ledbatpp_data->ticks_last_drain) > (hz * 2)) {
+        
+        half_cwnd = CCV(ccv, snd_cwnd) / 2;
+        
+        /* Halve CWND, floor at 2 * MSS */
+        if (half_cwnd < 2 * mss) {
+            CCV(ccv, snd_cwnd) = 2 * mss;
+        } else {
+            CCV(ccv, snd_cwnd) = half_cwnd;
+        }
+        
+        ledbatpp_data->ticks_last_drain = ticks;
+    }
 
     if (!(e_t->flags & ERTT_NEW_MEASUREMENT))
         return;
 
     if (e_t->minrtt && e_t->markedpkt_rtt) {
 
-        /* Section 4.5: RTT-based delay */
         queue_delay = e_t->markedpkt_rtt - e_t->minrtt;
-
         gain = compute_gain(target, e_t->minrtt);
 
-        /* =========================
-           Section 4.3: Modified Slow Start
-           ========================= */
-        if (d->slow_start) {
+        if (ledbatpp_data->slow_start_toggle) {
 
             CCV(ccv, snd_cwnd) += gain * mss;
 
-            /* Exit slow start if delay > 3/4 target */
             if (queue_delay > (3 * target) / 4) {
-                d->slow_start = 0;
+                ledbatpp_data->slow_start_toggle = 0;
                 CCV(ccv, snd_ssthresh) = CCV(ccv, snd_cwnd);
             }
 
         } else {
 
-            /* =========================
-               Section 4.2: AIMD
-               ========================= */
-
             if (queue_delay < target) {
-
-                /* Additive increase */
                 CCV(ccv, snd_cwnd) += gain * mss;
-
             } else {
 
-                /* Multiplicative decrease */
                 double ratio = ((double)queue_delay / target) - 1.0;
 
                 int32_t change =
                     gain * mss -
                     (CCV(ccv, snd_cwnd) * ratio);
 
-                /* Cap decrease to W/2 */
                 int32_t min_change = -(CCV(ccv, snd_cwnd) / 2);
 
                 if (change < min_change)
@@ -159,56 +146,42 @@ ledbatpp_ack_received(struct cc_var *ccv, ccsignal_t type)
 
                 CCV(ccv, snd_cwnd) += change;
 
-                /* Minimum CWND = 2 MSS */
                 if (CCV(ccv, snd_cwnd) < 2 * mss)
                     CCV(ccv, snd_cwnd) = 2 * mss;
             }
         }
 
-        /* =========================
-           Logging
-           ========================= */
-        d->ack_count++;
-        if ((d->ack_count % 50) == 0) {
-            struct timeval tv;
-            microuptime(&tv);
+        ledbatpp_data->ack_count++;
+
+        struct timeval tv;
+        microuptime(&tv);
 
             printf("LEDBATPP_TRACE,%jd.%06ld,%jd,%u\n",
                    (intmax_t)tv.tv_sec,
                    (long)tv.tv_usec,
                    (intmax_t)queue_delay,
                    CCV(ccv, snd_cwnd));
-        }
+        
     }
 
     e_t->flags &= ~ERTT_NEW_MEASUREMENT;
 }
 
-/* =========================
-   Congestion Signals
-   ========================= */
 static void
-ledbatpp_cong_signal(struct cc_var *ccv, ccsignal_t type)
+ledbatpp_cong_signal(struct cc_var *ccv, ccsignal_t signal_type)
 {
-    newreno_cc_cong_signal(ccv, type);
+    newreno_cc_cong_signal(ccv, signal_type);
 }
 
-/* =========================
-   Connection Init
-   ========================= */
 static void
 ledbatpp_conn_init(struct cc_var *ccv)
 {
-    struct ledbatpp *d = ccv->cc_data;
-    d->slow_start = 1;
+    struct ledbatpp *ledbatpp_data = ccv->cc_data;
+    ledbatpp_data->slow_start_toggle = 1;
 
-    /* Initial CWND = 2 packets (Section 4.3) */
     CCV(ccv, snd_cwnd) = 2 * tcp_fixed_maxseg(ccv->tp);
 }
 
-/* =========================
-   Module Init
-   ========================= */
 static int
 ledbatpp_mod_init(void)
 {
@@ -220,9 +193,6 @@ ledbatpp_mod_init(void)
     return 0;
 }
 
-/* =========================
-   Algorithm Registration
-   ========================= */
 struct cc_algo ledbatpp_cc_algo = {
     .name = "ledbatpp",
     .ack_received = ledbatpp_ack_received,
@@ -233,6 +203,34 @@ struct cc_algo ledbatpp_cc_algo = {
     .mod_init = ledbatpp_mod_init,
     .cc_data_sz = ledbatpp_data_sz,
 };
+
+static int
+ledbatpp_target_handler(SYSCTL_HANDLER_ARGS)
+{
+    int error;
+    uint32_t new;
+
+    new = V_ledbatpp_target;
+    error = sysctl_handle_int(oidp, &new, 0, req);
+    if (error == 0 && req->newptr != NULL) {
+        if (new == 0)
+            error = EINVAL;
+        else
+            V_ledbatpp_target = new;
+    }
+
+    return (error);
+}
+
+SYSCTL_DECL(_net_inet_tcp_cc_ledbatpp);
+SYSCTL_NODE(_net_inet_tcp_cc, OID_AUTO, ledbatpp,
+    CTLFLAG_RW | CTLFLAG_MPSAFE, NULL,
+    "LEDBAT++ related settings");
+
+SYSCTL_PROC(_net_inet_tcp_cc_ledbatpp, OID_AUTO, target,
+    CTLFLAG_VNET | CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+    &VNET_NAME(ledbatpp_target), 60, &ledbatpp_target_handler, "IU",
+    "LEDBAT++ target queueing delay");
 
 DECLARE_CC_MODULE(ledbatpp, &ledbatpp_cc_algo);
 MODULE_VERSION(ledbatpp, 1);

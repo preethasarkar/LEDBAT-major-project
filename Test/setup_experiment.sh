@@ -1,6 +1,5 @@
 #!/bin/sh
 
-# --- Argument Parsing ---
 NUM_CLIENTS=$1
 CC_LIST=$2
 BW=$3
@@ -21,7 +20,6 @@ if [ "$CC_COUNT" -ne "$NUM_CLIENTS" ]; then
 fi
 
 echo "--- Cleaning up previous state ---"
-# We no longer remove a 'server' jail, but we clean up client jails
 for j in $(jls name | grep client); do
     jail -r $j 2>/dev/null
 done
@@ -51,6 +49,9 @@ ifconfig bridge0 create
 # Assign the server IP (10.0.0.1) directly to the bridge on the host
 ifconfig bridge0 inet 10.0.0.1/24 up
 
+echo "--- Toggling off Delayed Ack ---"
+sysctl net.inet.tcp.delayed_ack=0
+
 i=1
 for CC in $CC_LIST_SPACED; do
     CLIENT="client$i"
@@ -72,6 +73,8 @@ for CC in $CC_LIST_SPACED; do
 
     # Apply CC to the client
     jexec $CLIENT sysctl net.inet.tcp.cc.algorithm=$CC
+    jexec $CLIENT sysctl net.inet.tcp.delayed_ack=0
+	
 
     i=$((i+1))
 done
@@ -81,7 +84,7 @@ echo "--- Configuring Dummynet on Host ---"
 ipfw -q flush
 # We apply the pipe to traffic passing through the bridge to simulate the bottleneck
 ipfw add 100 pipe 1 ip from any to any via bridge0
-sysctl net.inet.ip.dummynet.pipe_slot_limit=1000
+sysctl net.inet.ip.dummynet.pipe_slot_limit=2000
 ipfw pipe 1 config bw $BW queue $SIZE delay $DELAY
 
 echo "Setup complete! Host is now the server at 10.0.0.1"
