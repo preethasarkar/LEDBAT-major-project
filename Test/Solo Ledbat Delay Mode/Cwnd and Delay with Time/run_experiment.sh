@@ -44,8 +44,9 @@ fi
 echo "Connectivity OK ($CC)"
 
 echo "--- 5. Start experiment ---"
-# Clear kernel logs for a fresh trace
+# Clear kernel logs and stale route cache for fresh RTT measurements
 dmesg -c > /dev/null
+route flush > /dev/null 2>&1
 
 # Start iperf server on the host
 iperf3 -s -p 5201 -D
@@ -59,3 +60,4 @@ echo "--- 6. Extract CWND logs ---"
 dmesg | grep "^TRACE," | awk -F "TRACE," '{print $2}' > cwnd.csv
 
 echo "Done. Graph generated: ${CC}_${BW}_${RTT}.png"
+

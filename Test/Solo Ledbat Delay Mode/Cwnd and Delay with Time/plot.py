@@ -60,7 +60,9 @@ ax1.legend(loc="upper left")
 
 # --- Bottom Plot: Queue Delay ---
 ax2.plot(time, delay, label="Queue Delay", color="orange", linewidth=1)
-ax2.axhline(y=75, color='red', linestyle='--', label='Target (75ms)')
+
+# Note: LEDBAT++ targets might differ, but 75ms is your redline
+ax2.axhline(y=100, color='red', linestyle='--', label='Target (100ms)')
 ax2.set_xlabel("Time (s)")
 ax2.set_ylabel("Delay (ms)")
 ax2.grid(True)
