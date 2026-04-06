@@ -21,10 +21,7 @@ if [ "$CC_COUNT" -ne "$NUM_CLIENTS" ]; then
 fi
 
 echo "--- Cleaning up previous state ---"
-<<<<<<< HEAD
-=======
 # Clean up client jails
->>>>>>> fe65578 (Made setup and running experiment more extensible)
 for j in $(jls name | grep client); do
     jail -r $j 2>/dev/null
 done

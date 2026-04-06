@@ -24,10 +24,10 @@ run_and_plot() {
 run_and_plot "20Mbit/s" "50ms" "ledbatpp"
 
 # Run 2
-run_and_plot "20Mbit/s" "150ms" "ledbatpp"
+# run_and_plot "20Mbit/s" "150ms" "ledbatpp"
  
 # Run 3 (Added to make 3 total runs)
-run_and_plot "20Mbit/s" "300ms" "ledbatpp"
+# run_and_plot "20Mbit/s" "300ms" "ledbatpp"
 
 echo "================================================="
 echo "All experiments finished! ."

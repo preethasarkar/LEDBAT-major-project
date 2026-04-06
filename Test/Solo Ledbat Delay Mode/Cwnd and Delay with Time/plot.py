@@ -2,16 +2,19 @@ import sys
 import csv
 import matplotlib.pyplot as plt
 
-# Get BW and RTT from command line arguments for the title and filename
-if len(sys.argv) < 3:
-    print("Usage: python3 plot_combined.py <BW> <RTT>")
+# Updated check: now expecting 3 arguments (BW, RTT, CC)
+if len(sys.argv) < 4:
+    print("Usage: python3 plot.py <BW> <RTT> <CC>")
     sys.exit(1)
 
 bw = sys.argv[1]
 rtt = sys.argv[2]
-# Sanitize filename (replace / with _)
+cc = sys.argv[3]  # Capture the CC algorithm name
+
+# Sanitize filename
 filename_bw = bw.replace("/", "_")
-output_filename = f"ledbat_{filename_bw}_{rtt}.png"
+# Use CC in the filename to prevent overwriting
+output_filename = f"{cc}_{filename_bw}{rtt}.png"
 
 time = []
 delay = []
@@ -62,7 +65,7 @@ ax1.legend(loc="upper left")
 ax2.plot(time, delay, label="Queue Delay", color="orange", linewidth=1)
 
 # Note: LEDBAT++ targets might differ, but 75ms is your redline
-ax2.axhline(y=100, color='red', linestyle='--', label='Target (100ms)')
+ax2.axhline(y=60, color='red', linestyle='--', label='Target (60ms)')
 ax2.set_xlabel("Time (s)")
 ax2.set_ylabel("Delay (ms)")
 ax2.grid(True)

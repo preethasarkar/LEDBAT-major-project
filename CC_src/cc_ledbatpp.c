@@ -27,11 +27,11 @@ static int32_t ertt_id;
    ========================= */
 #define LEDBAT_MIN_CWND_PKTS 2
 #define LEDBAT_PERIODIC_INTERVAL 300
-#define SCALE 1024  /* 2^10 for fixed-point math */
+#define SCALE 1  /* 2^10 for fixed-point math */
 #define CONSTANT 1  /* multiplicative decrease constant, per draft Section 4.2 */
+const char *state_names[] = {"NORMAL", "DRAINING", "RECOVERING"};
 
 struct ledbatpp {
-    int slow_start_toggle;
     uint32_t ack_count;
     int slow_start;
     int initial_ss_done;
@@ -44,7 +44,7 @@ struct ledbatpp {
     uint32_t rtts_since_event;
 };
 
-VNET_DEFINE_STATIC(uint32_t, ledbatpp_target) = 60000; /* microseconds (60ms) */
+VNET_DEFINE_STATIC(uint32_t, ledbatpp_target) = 60; /* microseconds (60ms) */
 #define V_ledbatpp_target VNET(ledbatpp_target)
 
 /* Fixed-point gain: GAIN = 1 / min(16, CEIL(2*target/base)) * SCALE */
@@ -77,8 +77,11 @@ static void ledbatpp_cb_destroy(struct cc_var *ccv) {
         free(ccv->cc_data, M_CC_MEM); 
 }
 
+/* =========================
+   ACK Handling (CORE LOGIC)
+   ========================= */
 static void
-ledbatpp_ack_received(struct cc_var *ccv, ccsignal_t ack_type)
+ledbatpp_ack_received(struct cc_var *ccv, ccsignal_t type)
 {
     struct ertt *e_t;
     struct ledbatpp *d;
@@ -100,15 +103,11 @@ ledbatpp_ack_received(struct cc_var *ccv, ccsignal_t ack_type)
     if (!(e_t->flags & ERTT_NEW_MEASUREMENT))
         return;
 
-    /* Use markedpkt_rtt from ertt for RTT — directly measured per-packet RTT in ticks.
-     * Convert to microseconds: ticks * (1000000 / hz) */
-    current_rtt = (uint32_t)e_t->markedpkt_rtt * (1000000 / hz);
+    current_rtt = (uint32_t)e_t->markedpkt_rtt;
 
     /* Update our min_rtt — ignore zero or implausibly small values */
-    if (current_rtt > 1000) {
-        if (d->min_rtt == 0 || current_rtt < d->min_rtt)
-            d->min_rtt = current_rtt;
-    }
+    if (e_t->minrtt > 0)
+    	d->min_rtt = (uint32_t)e_t->minrtt;
 
     /* Guard: skip until we have a valid baseline */
     if (d->min_rtt == 0 || e_t->minrtt == 0 || e_t->markedpkt_rtt == 0)
@@ -125,12 +124,18 @@ ledbatpp_ack_received(struct cc_var *ccv, ccsignal_t ack_type)
     {
         struct timeval tv;
         microuptime(&tv);
-        printf("TRACE,%jd.%06ld,%ld,%u,%u,%u\n",
-               (intmax_t)tv.tv_sec, (long)tv.tv_usec,
-               (long)(queue_delay / 1000),
-               CCV(ccv, snd_cwnd),
-               d->min_rtt,
-               current_rtt);
+
+
+printf("LEDBATPP_TRACE,%jd.%06ld,%ld,%u,%u,%u,%s,%d\n",
+       (intmax_t)tv.tv_sec, (long)tv.tv_usec,
+       (long)(queue_delay),
+       CCV(ccv, snd_cwnd),
+       d->min_rtt,
+       current_rtt,
+       state_names[d->state],
+       d->slow_start
+); /* Add the mapped string here */
+    
     }
 
     /* ---------------------------------------------------------
@@ -154,8 +159,10 @@ ledbatpp_ack_received(struct cc_var *ccv, ccsignal_t ack_type)
     /* ---------------------------------------------------------
        STATE: RECOVERING
        --------------------------------------------------------- */
-    if (d->state == LB_RECOVERING) {
-        CCV(ccv, snd_cwnd) += (uint32_t)((gain * mss) / SCALE);
+
+if (d->state == LB_RECOVERING) {
+        /* CORRECT Linear Growth: Divide by CWND */
+        CCV(ccv, snd_cwnd) += (uint32_t)(((uint64_t)gain * mss * mss) / ((uint64_t)CCV(ccv, snd_cwnd) * SCALE));
 
         if (CCV(ccv, snd_cwnd) >= CCV(ccv, snd_ssthresh)) {
             d->state = LB_NORMAL;
@@ -170,7 +177,7 @@ ledbatpp_ack_received(struct cc_var *ccv, ccsignal_t ack_type)
        STATE: NORMAL
        --------------------------------------------------------- */
     if (d->slow_start) {
-        CCV(ccv, snd_cwnd) += (uint32_t)((gain * mss) / SCALE);
+        CCV(ccv, snd_cwnd) += (uint32_t)((mss));
 
         if (!d->initial_ss_done) {
             if (queue_delay > (int64_t)((3 * target) / 4)) {
@@ -186,9 +193,14 @@ ledbatpp_ack_received(struct cc_var *ccv, ccsignal_t ack_type)
         }
     } else {
         if (queue_delay < (int64_t)target) {
-            CCV(ccv, snd_cwnd) += (uint32_t)((gain * mss) / SCALE);
+            CCV(ccv, snd_cwnd) += (uint32_t)((gain * mss));
         } else {
-            int64_t change = MAX(((int64_t)gain * mss - CONSTANT * (int64_t)CCV(ccv, snd_cwnd) * (queue_delay - (int64_t)target) / (int64_t)target) / SCALE, -(int64_t)(CCV(ccv, snd_cwnd) / 2));
+	   int64_t add = ((int64_t)gain * mss) / SCALE;
+	   int64_t sub = CONSTANT * (int64_t)CCV(ccv, snd_cwnd) * (queue_delay - (int64_t)target) / (int64_t)target;
+
+           int64_t change = add - sub;
+           change = MAX(change, -(int64_t)(CCV(ccv, snd_cwnd) / 2));
+
             CCV(ccv, snd_cwnd) = MAX((int64_t)CCV(ccv, snd_cwnd) + change, (int64_t)(LEDBAT_MIN_CWND_PKTS * mss));
         }
     }
@@ -210,7 +222,7 @@ end:
 }
 
 static void
-ledbatpp_cong_signal(struct cc_var *ccv, ccsignal_t signal_type)
+ledbatpp_cong_signal(struct cc_var *ccv, ccsignal_t type)
 {
     struct ledbatpp *d = ccv->cc_data;
     if (d != NULL && type == CC_RTO) {
@@ -255,37 +267,6 @@ struct cc_algo ledbatpp_cc_algo = {
     .cc_data_sz = ledbatpp_data_sz,
 };
 
-static int
-ledbatpp_target_handler(SYSCTL_HANDLER_ARGS)
-{
-    int error;
-    uint32_t new;
-
-    new = V_ledbatpp_target;
-    error = sysctl_handle_int(oidp, &new, 0, req);
-    if (error == 0 && req->newptr != NULL) {
-        if (new == 0)
-            error = EINVAL;
-        else
-            V_ledbatpp_target = new;
-    }
-
-    return (error);
-}
-
-SYSCTL_DECL(_net_inet_tcp_cc_ledbatpp);
-SYSCTL_NODE(_net_inet_tcp_cc, OID_AUTO, ledbatpp,
-    CTLFLAG_RW | CTLFLAG_MPSAFE, NULL,
-    "LEDBAT++ related settings");
-
-SYSCTL_PROC(_net_inet_tcp_cc_ledbatpp, OID_AUTO, target,
-    CTLFLAG_VNET | CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
-    &VNET_NAME(ledbatpp_target), 60, &ledbatpp_target_handler, "IU",
-    "LEDBAT++ target queueing delay");
-
 DECLARE_CC_MODULE(ledbatpp, &ledbatpp_cc_algo);
 MODULE_VERSION(ledbatpp, 1);
 MODULE_DEPEND(ledbatpp, ertt, 1, 1, 1);
-
-
-
