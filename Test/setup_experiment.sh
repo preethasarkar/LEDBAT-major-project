@@ -87,8 +87,6 @@ for CC in $CC_LIST_SPACED; do
     # Apply CC to the client jail specifically
     jexec $CLIENT sysctl net.inet.tcp.cc.algorithm=$CC
     jexec $CLIENT sysctl net.inet.tcp.delayed_ack=0
-	
-
     i=$((i+1))
 done
 
@@ -97,7 +95,7 @@ echo "--- Configuring Dummynet on Host ---"
 ipfw -q flush
 # Apply the pipe to traffic passing through the bridge to simulate the bottleneck
 ipfw add 100 pipe 1 ip from any to any via bridge0
-sysctl net.inet.ip.dummynet.pipe_slot_limit=2000
+sysctl net.inet.ip.dummynet.pipe_slot_limit=10000
 ipfw pipe 1 config bw $BW queue $SIZE delay $DELAY
 
 echo "Setup complete! Host is now the server at 10.0.0.1"

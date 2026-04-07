@@ -14,13 +14,12 @@ cc = sys.argv[3]  # Capture the CC algorithm name
 # Sanitize filename
 filename_bw = bw.replace("/", "_")
 # Use CC in the filename to prevent overwriting
-output_filename = f"{cc}_{filename_bw}{rtt}.png"
+output_filename = f"{cc}_{filename_bw}_{rtt}.png"
 
 time = []
 delay = []
 cwnd_kb = []
 
-# Using 'with' is good practice; ensure your run_experiment.sh produces 'cwnd.csv'
 try:
     with open("cwnd.csv", "r") as f:
         reader = csv.reader(f)
@@ -28,7 +27,6 @@ try:
             if len(row) < 3:
                 continue
             try:
-                # Based on your printf: LEDBATPP_TRACE,time,delay,cwnd
                 t = float(row[0])
                 d = float(row[1])             # Delay in ms
                 c = float(row[2]) / 1024.0    # CWND in KB
@@ -65,7 +63,7 @@ ax1.legend(loc="upper left")
 ax2.plot(time, delay, label="Queue Delay", color="orange", linewidth=1)
 
 # Note: LEDBAT++ targets might differ, but 75ms is your redline
-ax2.axhline(y=60, color='red', linestyle='--', label='Target (60ms)')
+ax2.axhline(y=30, color='red', linestyle='--', label='Target (30ms)')
 ax2.set_xlabel("Time (s)")
 ax2.set_ylabel("Delay (ms)")
 ax2.grid(True)
