@@ -1,23 +1,16 @@
-# Ignore build files generated in CC_LOADER
-# Ignore everything in the directory
-/CC_LOADER/*
+# 1. Ignore everything inside CC_LOADER recursively
+CC_LOADER/**/*
 
-# Allow the directory itself so Git can peek inside
-!/CC_LOADER/**/
+# 2. Allow Git to look into folders so it can find the Makefiles
+!CC_LOADER/**/
 
-# Allow specific files in the CC_LOADER root
-!/CC_LOADER/cc_loader.sh
+# 3. Explicitly allow the files you need for the project
+!CC_LOADER/cc_loader.sh
+!CC_LOADER/**/Makefile
 
-# NOW: Ignore everything inside the subdirectories by default
-/CC_LOADER//
+# 4. Ignore test results and data files
+Test/**/cwnd.csv
+Test/**/throughput.txt
 
-# Allow all Makefiles in any subfolder of CC_LOADER
-!/CC_LOADER/**/Makefile
-
-# Ignore files generated while running any experiment
-# Ignore specific data files anywhere inside the Test folder
-/Test/**/cwnd.csv
-/Test/**/throughput.txt
-
-# Ignore all log files
+# 5. Ignore the logs folder
 Test/Ledbat Vs CC Algos/Ledbat vs Cubic/logs/
