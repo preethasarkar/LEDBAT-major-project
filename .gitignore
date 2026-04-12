@@ -14,3 +14,5 @@ Test/**/throughput.txt
 
 # 5. Ignore the logs folder
 Test/Ledbat Vs CC Algos/Ledbat vs Cubic/logs/
+Test/Ledbat Vs CC Algos/Ledbat vs Short flows/logs/
+Test/Solo Delay Mode/Throughput vs Bottleneck Bw/logs/
