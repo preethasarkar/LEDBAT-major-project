@@ -1,0 +1,11 @@
+{
+	"start":	{
+		"connected":	[],
+		"version":	"iperf 3.20",
+		"system_info":	"FreeBSD  15.0-RELEASE-p1 FreeBSD 15.0-RELEASE-p1 releng/15.0-n280999-7bceec30b351 GENERIC amd64"
+	},
+	"intervals":	[],
+	"end":	{
+	},
+	"error":	"the server is busy running a test. try again later"
+}
