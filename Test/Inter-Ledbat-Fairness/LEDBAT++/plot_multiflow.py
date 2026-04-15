@@ -1,87 +1,109 @@
-import json
-import matplotlib.pyplot as plt
-import argparse
-import glob
 import sys
-import os
+import csv
+import glob
+import argparse
+import matplotlib.pyplot as plt
 
 def main():
-    # 1. Setup Argument Parsing to catch variables from main.sh
-    parser = argparse.ArgumentParser(description='Plot LEDBAT++ flows from iperf3 JSON files.')
+    # 1. Setup Argument Parsing
+    parser = argparse.ArgumentParser(description='Plot LEDBAT++ flows from kernel CSV logs.')
     parser.add_argument('--bw', default="20Mbit/s", help='Bandwidth for graph title')
     parser.add_argument('--rtt', default="20ms", help='Base RTT for graph title')
     parser.add_argument('--buffer', default="500", help='Buffer size in ms for graph title')
     args = parser.parse_args()
 
-    # 2. Automatically find all JSON flow files
-    # This looks for flow_1.json, flow_2.json, etc.
-    json_files = sorted(glob.glob("flow_*.json"))
+    # 2. Find all the CSV flow files
+    csv_files = sorted(glob.glob("cwnd_flow_*.csv"))
 
-    if not json_files:
-        print("Error: No flow_*.json files found. Did the iperf3 commands run successfully?")
+    if not csv_files:
+        print("Error: No cwnd_flow_*.csv files found.")
         sys.exit(1)
 
-    plt.figure(figsize=(12, 7))
+    flow_data = {}
+    global_min_time = float('inf')
 
-    # 3. Loop through each file and add a line to the graph
-    for filename in json_files:
-        # Extract Flow ID from filename (e.g., flow_2.json -> 2)
+    # 3. Read Data
+    for filename in csv_files:
         try:
-            flow_id_str = filename.split('_')[1].split('.')[0]
-            flow_id = int(flow_id_str)
+            # Assumes filename format: cwnd_flow_1.csv
+            flow_id = int(filename.split('_')[2].split('.')[0])
         except (IndexError, ValueError):
-            print(f"Warning: Could not determine Flow ID from {filename}. Skipping.")
             continue
 
-        with open(filename, 'r') as f:
-            try:
-                data = json.load(f)
-                
-                # Basic error check for the JSON content
-                if 'intervals' not in data:
-                    print(f"Warning: No interval data in {filename}. Check iperf3 logs.")
-                    continue
-                
-                intervals = data['intervals']
-                
-                # Extract Start Time and CWND
-                # Note: snd_cwnd is in bytes, we divide by 1500 to get 'Packets'
-                times = [i['streams'][0]['start'] for i in intervals]
-                cwnd = [i['streams'][0]['snd_cwnd'] / 1500 for i in intervals]
-                
-                # 4. Apply the Staggered Offset
-                # Since each iperf3 client thinks it starts at 0, we shift them
-                # by 10s intervals (Flow 1 starts at 0, Flow 2 at 10, etc.)
-                offset = (flow_id - 1) * 10
-                global_times = [t + offset for t in times]
-                
-                # Draw the line for this specific flow
-                plt.plot(global_times, cwnd, label=f"Flow {flow_id}", linewidth=1.5)
+        raw_times = []
+        cwnd_packets = []
 
-            except (json.JSONDecodeError, KeyError, IndexError) as e:
-                print(f"Warning: Failed to parse {filename}: {e}")
+        try:
+            with open(filename, "r") as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    if len(row) < 5:
+                        continue
+                    try:
+                        t = float(row[1])
+                        c_bytes = float(row[4])
+                        
+                        # --- SANITY FILTER (Updated) ---
+                        # 2,000,000 bytes is ~1.9MB. Perfect for a 20Mbps/500ms link.
+                        if c_bytes > 2000000 or c_bytes < 0:
+                            continue
+                        
+                        # MSS Divisor (1448 for standard Ethernet minus TCP headers)
+                        c_packets = c_bytes / 1448.0
+                        
+                        raw_times.append(t)
+                        cwnd_packets.append(c_packets)
 
-    # 5. Graph Styling for Figure 25 Replication
-    plt.title(f"LEDBAT++ Late-Comer Analysis (Replication)\n"
-              f"BW: {args.bw} | RTT: {args.rtt} | Buffer: {args.buffer}ms", 
-              fontsize=14, fontweight='bold', pad=15)
+                        if t < global_min_time:
+                            global_min_time = t
+
+                    except ValueError:
+                        continue
+        except FileNotFoundError:
+            continue
+
+        if raw_times:
+            flow_data[flow_id] = {"time": raw_times, "cwnd": cwnd_packets}
+
+    if global_min_time == float('inf'):
+        print("Error: No valid data found.")
+        sys.exit(1)
+
+    # 4. Plotting
+    plt.figure(figsize=(14, 8)) # Slightly wider for 150s timeline
+
+    # Use a nice color cycle
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
+
+    for i, (flow_id, data) in enumerate(sorted(flow_data.items())):
+        normalized_time = [t - global_min_time for t in data["time"]]
+        
+        # Thinner lines and slight alpha help see the "fairness" overlap
+        plt.plot(normalized_time, data["cwnd"], 
+                 label=f"Flow {flow_id} (Port {5200+flow_id})", 
+                 linewidth=1.0, 
+                 alpha=0.8,
+                 color=colors[i % len(colors)])
+
+    # 5. Graph Styling
+    plt.title(f"LEDBAT++ Late-Comer Fairness & Convergence\n"
+              f"Config: {args.bw} BW | {args.rtt} RTT | {args.buffer}ms Buffer", 
+              fontsize=14, fontweight='bold', pad=20)
     
-    plt.xlabel("Global Experiment Time (seconds)", fontsize=12)
+    plt.xlabel("Experiment Time (Seconds)", fontsize=12)
     plt.ylabel("Congestion Window (Packets)", fontsize=12)
+    plt.legend(loc='upper right', title="Active Flows", frameon=True, shadow=True)
+    plt.grid(True, which='both', linestyle=':', alpha=0.5)
     
-    plt.legend(loc='upper right', title="Active Flows", shadow=True)
-    plt.grid(True, which='both', linestyle='--', alpha=0.6)
-    
-    # Ensure graph starts at zero
-    plt.xlim(left=0)
+    # Ensure the 150s window is clearly visible
+    plt.xlim(0, 160) 
     plt.ylim(bottom=0)
-    
     plt.tight_layout()
 
-    # 6. Save the final image
-    output_name = "figure25_comparison.png"
+    # 6. Save
+    output_name = "figure25_cwnd_convergence.png"
     plt.savefig(output_name, dpi=300)
-    print(f"Successfully generated graph: {output_name}")
+    print(f"--> Success! {output_name} generated with {len(flow_data)} flows.")
 
 if __name__ == "__main__":
     main()
