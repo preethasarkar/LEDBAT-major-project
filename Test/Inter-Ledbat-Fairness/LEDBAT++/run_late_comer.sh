@@ -41,7 +41,6 @@ cd - > /dev/null
 # =====================================================================
 echo "--- Starting $NUM_FLOWS iperf3 Servers ---"
 # Open firewall to allow communication between host and jails
-sudo ipfw -q flush
 sudo ipfw add 100 allow ip from any to any
 
 # Start a server for EACH port (5201, 5202, 5203, 5204)

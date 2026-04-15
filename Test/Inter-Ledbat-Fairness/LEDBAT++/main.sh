@@ -5,7 +5,7 @@
 # =====================================================================
 BW="20Mbit/s"
 RTT_BASE="20ms"
-BUFFER_MS=200
+BUFFER_MS=500
 NUM_FLOWS=4
 INTERVAL=10
 TOTAL_TIME=150
@@ -51,8 +51,8 @@ for i in $(seq 1 $NUM_FLOWS); do
     
     # Grep only relevant lines, filter by port, then strip everything before the trace
     grep "LEDBATPP_TRACE" full_trace.log | \
-    grep ",${PORT}," | \
-    sed 's/^.*kernel: //' > "cwnd_flow_${i}.csv"
+    sed 's/^.*kernel: //' | \
+    awk -F, -v port="$PORT" '$3 == port' > "cwnd_flow_${i}.csv"
     
     if [ -s "cwnd_flow_${i}.csv" ]; then
         echo "   [Port $PORT] Extracted $(wc -l < "cwnd_flow_${i}.csv") clean lines."
