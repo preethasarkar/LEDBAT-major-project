@@ -1,19 +1,23 @@
 #!/bin/sh
 
-BW=$1
-RTT=$2
-CAPACITY=$3
-DUR=$4
-if [ -z "$BW" ] || [ -z "$RTT" ] || [ -z "$CAPACITY" ] || [ -z "$DUR" ]; then
-    echo "Usage: $0 <BW> <RTT> <CAPACITY> <DURATION>"
-    echo "Example: $0 20Mbit/s 50ms 200 60"
+CC=$1
+BW=$2
+RTT=$3
+CAPACITY=$4
+DUR=$5
+
+if [ -z "$CC" ] || [ -z "$BW" ] || [ -z "$RTT" ] || [ -z "$CAPACITY" ] || [ -z "$DUR" ]; then
+    echo "Usage: $0 <CC> <BW> <RTT> <CAPACITY> <DURATION>"
+    echo "Example: $0 ledbat 20Mbit/s 50ms 200 60"
     exit 1
 fi
 
+mkdir -p logs
+
 echo "--- 0. Running setup script ---"
 cd ../../
-# Ask setup script for 2 clients, using ledbat and cubicX
-./setup_experiment.sh 2 "ledbat,cubicX" "$BW" "$CAPACITY" "$RTT" || exit 1
+# Ask setup script for 2 clients, using the parsed CC algorithm and cubicX
+./setup_experiment.sh 2 "${CC},cubicX" "$BW" "$CAPACITY" "$RTT" || exit 1
 cd - > /dev/null
 
 echo "--- 1. Pre-flight setup ---"
@@ -50,19 +54,23 @@ iperf3 -s -p 5202 -D
 #increasing buffer size to 33MB
 sysctl kern.ipc.maxsockbuf=33554432
 
-echo "Running LEDBAT vs CUBIC competition for $DUR seconds..."
+# Convert the CC variable to uppercase for the dmesg trace tag
+CC_UPPER=$(echo "$CC" | tr '[:lower:]' '[:upper:]')
+TRACE_TAG="${CC_UPPER}_TRACE"
+
+echo "Running ${CC_UPPER} vs CUBIC competition for $DUR seconds..."
 
 # Start both clients in the BACKGROUND using '&' so they run simultaneously
-jexec client1 iperf3 -c 10.0.0.1 -w 16M -t $DUR -p 5201 > ./logs/throughput_ledbat.txt &
+jexec client1 iperf3 -c 10.0.0.1 -w 16M -t $DUR -p 5201 > "./logs/throughput_${CC}.txt" &
 sleep 1
-jexec client2 iperf3 -c 10.0.0.1 -w 16M -t $DUR -p 5202 > ./logs/throughput_cubic.txt &
+jexec client2 iperf3 -c 10.0.0.1 -w 16M -t $DUR -p 5202 > "./logs/throughput_cubic.txt" &
 
 # Wait for both background processes to finish before continuing
 wait
 
 echo "--- 5. Extract CWND logs ---"
-# Extract traces into two separate files
-dmesg | grep "LEDBAT_TRACE" | awk -F "LEDBAT_TRACE," '{print $2}' > ./logs/cwnd_ledbat.csv
-dmesg | grep "CUBIC_TRACE"  | awk -F "CUBIC_TRACE," '{print $2}' > ./logs/cwnd_cubic.csv
+# Extract traces into two separate files dynamically
+dmesg | grep "$TRACE_TAG" | awk -F "${TRACE_TAG}," '{print $2}' > "./logs/cwnd_${CC}.csv"
+dmesg | grep "CUBIC_TRACE"  | awk -F "CUBIC_TRACE," '{print $2}' > "./logs/cwnd_cubic.csv"
 
 echo "Experiment complete."

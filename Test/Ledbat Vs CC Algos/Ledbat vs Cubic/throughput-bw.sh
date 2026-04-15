@@ -2,9 +2,8 @@
 
 # --- Fixed Parameters ---
 RTT="20ms"
-CAPACITY="100" # Deep queue so CUBIC doesn't starve the pipe
-DUR="180"
-
+DUR="60"
+CC="ledbatpp"
 # List of Bandwidths to test (Numeric values in Mbit/s)
 BW_LIST="5 10 20 30 40"
 
@@ -25,10 +24,10 @@ for BW_VAL in $BW_LIST; do
     if [ "$CAPACITY" -lt 20 ]; then
         CAPACITY=20
     fi
-    ./run_experiment.sh "$BW" "$RTT" "$CAPACITY" "$DUR"
+    ./run_experiment.sh "$CC" "$BW" "$RTT" "$CAPACITY" "$DUR"
     
     # 2. Rename and save the logs with the BW value
-    cp logs/throughput_ledbat.txt "logs/throughput_ledbat_${BW_VAL}Mbps.txt"
+    cp logs/throughput_${CC}.txt "logs/throughput_${CC}_${BW_VAL}Mbps.txt"
     cp logs/throughput_cubic.txt "logs/throughput_cubic_${BW_VAL}Mbps.txt"
     
     echo "Saved throughput logs for $BW in ./logs/"
@@ -39,4 +38,4 @@ echo "All experiments finished! Generating Bandwidth Graph..."
 echo "================================================="
 
 # 3. Call the Python script
-python3 plot_throughput_bw.py "$RTT" "$BW_LIST"
+python3 plot_throughput_bw.py "$CC" "$RTT" "$BW_LIST"

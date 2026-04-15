@@ -80,9 +80,12 @@ plt.figure(figsize=(10, 6))
 added_label = False
 for bw in valid_bws:
     max_goodput = bw * 0.9653
+    ninety_percent_max_goodput = 0.9 * max_goodput
     # Draw a line from (bw - 1.5) to (bw + 1.5)
     plt.hlines(y=max_goodput, xmin=bw-1.5, xmax=bw+1.5, color='black', linestyle='--', alpha=0.8, linewidth=2, 
                label='Max application rate' if not added_label else "")
+    plt.hlines(y=ninety_percent_max_goodput, xmin=bw-1.5, xmax=bw+1.5, color='black', linestyle='--', alpha=0.8, linewidth=2, 
+               label='0.9 * max application rate' if not added_label else "")
     added_label = True # Ensure the legend only gets one entry for these lines
 
 # Plot Solo CC Algorithm

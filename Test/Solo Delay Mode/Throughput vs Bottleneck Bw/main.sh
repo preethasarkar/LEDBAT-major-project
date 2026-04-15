@@ -1,9 +1,9 @@
 #!/bin/sh
 
-CC_ALGO="ledbat" 
-# RTT_LIST="20ms 50ms 100ms"
+CC_ALGO="ledbatpp" 
 RTT_LIST="100ms"
-BW_LIST="5"
+# RTT_LIST="100ms"
+BW_LIST="5 10 20 30 40"
 DUR="150"
 
 chmod +x ./run_experiment.sh
