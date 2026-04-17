@@ -43,7 +43,7 @@ static int32_t ertt_id;
 VNET_DEFINE_STATIC(uint32_t, ledbat_target) = 50;
 #define V_ledbat_target VNET(ledbat_target)
 
-#define LEDBAT_GAIN 5
+#define LEDBAT_GAIN 3
 #define LEDBAT_TARGET V_ledbat_target
 #define LEDBAT_MIN_CWND 2
 #define LEDBAT_ALLOWED_INCREASE 1
