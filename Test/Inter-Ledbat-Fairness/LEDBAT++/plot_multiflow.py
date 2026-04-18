@@ -49,7 +49,7 @@ def main():
                             continue
                         
                         # MSS Divisor (1448 for standard Ethernet minus TCP headers)
-                        c_packets = c_bytes / 1448.0
+                        c_packets = c_bytes / 1024.0
                         
                         raw_times.append(t)
                         cwnd_packets.append(c_packets)
@@ -96,7 +96,7 @@ def main():
     plt.grid(True, which='both', linestyle=':', alpha=0.5)
     
     # Ensure the 150s window is clearly visible
-    plt.xlim(0, 160) 
+    plt.xlim(0, 510) 
     plt.ylim(bottom=0)
     plt.tight_layout()
 

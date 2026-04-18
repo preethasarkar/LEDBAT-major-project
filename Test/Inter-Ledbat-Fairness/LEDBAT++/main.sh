@@ -8,7 +8,7 @@ RTT_BASE="20ms"
 BUFFER_MS=500
 NUM_FLOWS=4
 INTERVAL=10
-TOTAL_TIME=150
+TOTAL_TIME=500
 CC="ledbatpp"
 
 GRAPH_FILE="figure25_cwnd_convergence.png"
@@ -28,7 +28,7 @@ rm -f "$GRAPH_FILE"
 # We use tail -F to follow the system messages file
 echo "--> Clearing kernel buffer and starting disk logger..."
 sudo dmesg -c > /dev/null
-tail -F /var/log/messages > full_trace.log &
+tail -n 0 -F /var/log/messages > full_trace.log &
 LOGGER_PID=$!
 
 # 3. Execute the experiment
@@ -51,8 +51,8 @@ for i in $(seq 1 $NUM_FLOWS); do
     
     # Grep only relevant lines, filter by port, then strip everything before the trace
     grep "LEDBATPP_TRACE" full_trace.log | \
-    sed 's/^.*kernel: //' | \
-    awk -F, -v port="$PORT" '$3 == port' > "cwnd_flow_${i}.csv"
+    grep ",${PORT}," | \
+    sed 's/^.*kernel: //' > "cwnd_flow_${i}.csv"
     
     if [ -s "cwnd_flow_${i}.csv" ]; then
         echo "   [Port $PORT] Extracted $(wc -l < "cwnd_flow_${i}.csv") clean lines."
