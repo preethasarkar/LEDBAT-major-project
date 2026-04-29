@@ -84,6 +84,7 @@ ledbatpp_ack_received(struct cc_var *ccv, ccsignal_t type)
     int64_t queue_delay;
     tcp_seq ack;
     struct timeval tv_now;
+    uint16_t current_port;
 
     d = ccv->cc_data;
     e_t = khelp_get_osd(&CCV(ccv, t_osd), ertt_id);
@@ -131,9 +132,15 @@ ledbatpp_ack_received(struct cc_var *ccv, ccsignal_t type)
         d->next_rtt_seq = ccv->tp->snd_max;
 
 log:
-    printf("LEDBATPP_TRACE,%jd.%06ld,%ld,%u,%u,%u\n",
-           (intmax_t)tv_now.tv_sec, (long)tv_now.tv_usec,
-           (long)(queue_delay), CCV(ccv, snd_cwnd), d->min_rtt, current_rtt);
+    current_port = ntohs(ccv->tp->t_inpcb.inp_fport);
+    
+    printf("LEDBATPP_TRACE,%jd.%06ld,%ld,%u,%u,%u,%u\n",
+       (intmax_t)tv_now.tv_sec, (long)tv_now.tv_usec,
+       (long)(queue_delay),
+       CCV(ccv, snd_cwnd),
+       d->min_rtt,
+       current_rtt,
+       (unsigned int)current_port);
 
     /* --- STATE: DRAINING --- */
     if (d->state == LB_DRAINING) {
@@ -150,16 +157,19 @@ log:
 
     /* --- STATE: RECOVERING --- */
     if (d->state == LB_RECOVERING) {
-        /* Exponential recovery: double cwnd each RTT back to ssthresh */
-        CCV(ccv, snd_cwnd) = MIN(CCV(ccv, snd_cwnd) * 2, CCV(ccv, snd_ssthresh));
-        if (CCV(ccv, snd_cwnd) >= CCV(ccv, snd_ssthresh)) {
-            uint64_t duration = now_ms - d->slowdown_enter_ms;
-            d->next_slowdown_ts_ms = now_ms + (9 * duration);
-            printf("LEDBAT_DEBUG: RECOVERING complete duration=%ju next_slowdown=%ju\n",
-                   (uintmax_t)duration, (uintmax_t)d->next_slowdown_ts_ms);
-            d->state = LB_NORMAL;
-            d->slow_start = 0;
+        if (SEQ_GEQ(ack, d->next_rtt_seq)) {
+            uint32_t incr = 2 * gain * mss / SCALE;
+            if (incr == 0) incr = 1;
+            CCV(ccv, snd_cwnd) = MIN(CCV(ccv, snd_cwnd) + incr, CCV(ccv, snd_ssthresh));
             d->next_rtt_seq = ccv->tp->snd_max;
+
+            if (CCV(ccv, snd_cwnd) >= CCV(ccv, snd_ssthresh)) {
+                uint64_t duration = now_ms - d->slowdown_enter_ms;
+                d->next_slowdown_ts_ms = now_ms + (9 * duration);
+                d->state = LB_NORMAL;
+                d->slow_start = 0;
+                d->next_rtt_seq = ccv->tp->snd_max;
+            }
         }
         goto end;
     }
@@ -264,3 +274,7 @@ struct cc_algo ledbatpp_cc_algo = {
 DECLARE_CC_MODULE(ledbatpp, &ledbatpp_cc_algo);
 MODULE_VERSION(ledbatpp, 1);
 MODULE_DEPEND(ledbatpp, ertt, 1, 1, 1);
+
+
+
+

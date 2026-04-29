@@ -40,8 +40,8 @@ def main():
                     if len(row) < 5:
                         continue
                     try:
-                        t = float(row[1])
-                        c_bytes = float(row[4])
+                        t = float(row[0])
+                        c_bytes = float(row[2])
                         
                         # --- SANITY FILTER (Updated) ---
                         # 2,000,000 bytes is ~1.9MB. Perfect for a 20Mbps/500ms link.

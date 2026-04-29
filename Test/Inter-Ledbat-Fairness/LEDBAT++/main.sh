@@ -7,7 +7,7 @@ BW="20Mbit/s"
 RTT_BASE="20ms"
 BUFFER_MS=500
 NUM_FLOWS=4
-INTERVAL=10
+INTERVAL=30
 TOTAL_TIME=500
 CC="ledbatpp"
 
@@ -19,6 +19,7 @@ echo "========================================================="
 
 # 1. Clean up old data to ensure a fresh run
 # This ensures we don't plot old "zombie" data
+sudo killall tail 2>/dev/null
 chmod +x run_late_comer.sh
 rm -f cwnd_flow_*.csv
 rm -f full_trace.log
@@ -28,6 +29,7 @@ rm -f "$GRAPH_FILE"
 # We use tail -F to follow the system messages file
 echo "--> Clearing kernel buffer and starting disk logger..."
 sudo dmesg -c > /dev/null
+sudo truncate -s 0 /var/log/messages
 tail -n 0 -F /var/log/messages > full_trace.log &
 LOGGER_PID=$!
 
@@ -50,9 +52,7 @@ for i in $(seq 1 $NUM_FLOWS); do
     PORT=$((5200 + i))
     
     # Grep only relevant lines, filter by port, then strip everything before the trace
-    grep "LEDBATPP_TRACE" full_trace.log | \
-    grep ",${PORT}," | \
-    sed 's/^.*kernel: //' > "cwnd_flow_${i}.csv"
+    awk -F',' -v port="$PORT" '/LEDBATPP_TRACE/ && $NF == port { sub(/^.*kernel: LEDBATPP_TRACE,/, ""); print }' full_trace.log > "cwnd_flow_${i}.csv"
     
     if [ -s "cwnd_flow_${i}.csv" ]; then
         echo "   [Port $PORT] Extracted $(wc -l < "cwnd_flow_${i}.csv") clean lines."
