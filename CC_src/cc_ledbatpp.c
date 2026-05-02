@@ -115,15 +115,35 @@ ledbatpp_ack_received(struct cc_var *ccv, ccsignal_t type)
     queue_delay = (int64_t)current_rtt - (int64_t)d->min_rtt;
     gain = compute_gain(target, d->min_rtt);
 
-    /* --- GLOBAL TRIGGER: PERIODIC SLOWDOWN --- */
+    /* --- GLOBAL TRIGGER: PERIODIC SLOWDOWN (HISTORY-AWARE) --- */
     if (d->next_slowdown_ts_ms != 0 && now_ms >= d->next_slowdown_ts_ms) {
         if (d->state == LB_NORMAL) {
             d->state = LB_DRAINING;
             d->drain_rtt_count = 0;
             d->slowdown_enter_ms = now_ms;
             d->next_rtt_seq = ccv->tp->snd_max;
-            CCV(ccv, snd_ssthresh) = CCV(ccv, snd_cwnd);
-            CCV(ccv, snd_cwnd) = LEDBAT_MIN_CWND_PKTS * mss;
+
+            uint32_t current_cwnd = CCV(ccv, snd_cwnd);
+            uint32_t floor = LEDBAT_MIN_CWND_PKTS * mss;
+
+            /* Use last_ssthresh as a stability anchor */
+            uint32_t anchor = (d->last_ssthresh > 0) ? d->last_ssthresh : current_cwnd;
+            
+            /* Safety: Ensure delay isn't negative for unsigned math */
+            uint64_t safe_delay = (queue_delay > 0) ? (uint64_t)queue_delay : 0;
+            
+            /* Calculate reduction factor: anchor * (delay / (target + delay)) */
+            uint64_t delay_factor = (safe_delay * 1024) / (target + (uint32_t)safe_delay);
+            uint32_t reduction = (anchor * delay_factor) / 1024;
+
+            CCV(ccv, snd_ssthresh) = current_cwnd;
+            d->last_ssthresh = current_cwnd; 
+
+            if (anchor > reduction + floor) {
+                CCV(ccv, snd_cwnd) = anchor - reduction;
+            } else {
+                CCV(ccv, snd_cwnd) = floor;
+            }
             goto log;
         }
     }
@@ -144,7 +164,7 @@ log:
 
     /* --- STATE: DRAINING --- */
     if (d->state == LB_DRAINING) {
-        CCV(ccv, snd_cwnd) = LEDBAT_MIN_CWND_PKTS * mss;
+        /* cwnd is maintained at the dynamic value set in the trigger above */
         if (SEQ_GEQ(ack, d->next_rtt_seq)) {
             d->drain_rtt_count++;
             d->next_rtt_seq = ccv->tp->snd_max;
@@ -214,6 +234,7 @@ log:
                 d->slowdown_enter_ms = now_ms;
                 d->next_rtt_seq = ccv->tp->snd_max;
                 CCV(ccv, snd_ssthresh) = CCV(ccv, snd_cwnd);
+                d->last_ssthresh = CCV(ccv, snd_cwnd);
             }
         }
         d->next_rtt_seq = ccv->tp->snd_max;
@@ -249,6 +270,7 @@ ledbatpp_conn_init(struct cc_var *ccv)
     d->next_rtt_seq = 0;
     d->min_rtt = 0;
     d->next_slowdown_ts_ms = 0;
+    d->last_ssthresh = 0;
 
     CCV(ccv, snd_cwnd) = LEDBAT_MIN_CWND_PKTS * tcp_fixed_maxseg(ccv->tp);
 }
@@ -261,20 +283,16 @@ ledbatpp_mod_init(void)
 }
 
 struct cc_algo ledbatpp_cc_algo = {
-    .name        = "ledbatpp",
+    .name         = "ledbatpp",
     .ack_received = ledbatpp_ack_received,
-    .cb_destroy  = ledbatpp_cb_destroy,
-    .cb_init     = ledbatpp_cb_init,
-    .cong_signal = ledbatpp_cong_signal,
-    .conn_init   = ledbatpp_conn_init,
-    .mod_init    = ledbatpp_mod_init,
-    .cc_data_sz  = ledbatpp_data_sz,
+    .cb_destroy   = ledbatpp_cb_destroy,
+    .cb_init      = ledbatpp_cb_init,
+    .cong_signal  = ledbatpp_cong_signal,
+    .conn_init    = ledbatpp_conn_init,
+    .mod_init     = ledbatpp_mod_init,
+    .cc_data_sz   = ledbatpp_data_sz,
 };
 
 DECLARE_CC_MODULE(ledbatpp, &ledbatpp_cc_algo);
 MODULE_VERSION(ledbatpp, 1);
 MODULE_DEPEND(ledbatpp, ertt, 1, 1, 1);
-
-
-
-
