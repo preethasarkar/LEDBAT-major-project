@@ -3,10 +3,10 @@
 # =====================================================================
 # EXPERIMENT CONFIGURATION
 # =====================================================================
-BW="20Mbit/s"
+BW="50Mbit/s"
 RTT_BASE="20ms"
 BUFFER_MS=500
-NUM_FLOWS=2
+NUM_FLOWS=4
 INTERVAL=30
 TOTAL_TIME=500
 CC="ledbatpp"

@@ -91,7 +91,7 @@ def main():
               fontsize=14, fontweight='bold', pad=20)
     
     plt.xlabel("Experiment Time (Seconds)", fontsize=12)
-    plt.ylabel("Congestion Window (Packets)", fontsize=12)
+    plt.ylabel("Congestion Window (KiloBytes)", fontsize=12)
     plt.legend(loc='upper right', title="Active Flows", frameon=True, shadow=True)
     plt.grid(True, which='both', linestyle=':', alpha=0.5)
     
